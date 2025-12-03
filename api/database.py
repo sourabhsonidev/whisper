@@ -25,6 +25,8 @@ class Transcription(Base):
     segments = Column(JSON, nullable=True)  # Store full segments data
     processing_time = Column(Float, nullable=True)  # Time taken in seconds
     audio_duration = Column(Float, nullable=True)  # Duration of audio in seconds
+    token_count = Column(Integer, nullable=True)  # Number of tokens in transcription
+    cost = Column(Float, nullable=True)  # Calculated cost based on tokens and model
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     

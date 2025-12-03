@@ -8,12 +8,14 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
 from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc
 import torch
 import whisper
 from whisper import load_model, transcribe
+import pandas as pd
+from io import BytesIO
 
 from .database import get_db, init_db, Transcription
 from .models import (
@@ -25,6 +27,7 @@ from .models import (
     DateStatsResponse,
     SegmentResponse
 )
+from .utils import calculate_token_count, calculate_cost
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -126,17 +129,25 @@ async def transcribe_audio(
             last_segment = result["segments"][-1]
             audio_duration = last_segment.get("end", 0)
         
+        # Calculate token count and cost
+        detected_language = result.get("language", "en")
+        is_multilingual = not model.endswith(".en") if model else True
+        token_count = calculate_token_count(result["text"], detected_language, is_multilingual)
+        cost = calculate_cost(token_count, model, audio_duration)
+        
         # Save to database
         db_transcription = Transcription(
             audio_filename=file.filename,
             audio_path=str(file_path),
             transcribed_text=result["text"],
-            language=result.get("language"),
+            language=detected_language,
             model_used=model,
             task=task,
             segments=result.get("segments"),
             processing_time=processing_time,
             audio_duration=audio_duration,
+            token_count=token_count,
+            cost=cost,
             metadata={
                 "word_timestamps": word_timestamps,
                 "temperature": temperature,
@@ -172,6 +183,8 @@ async def transcribe_audio(
             segments=segments_response,
             processing_time=db_transcription.processing_time,
             audio_duration=db_transcription.audio_duration,
+            token_count=db_transcription.token_count,
+            cost=db_transcription.cost,
             created_at=db_transcription.created_at
         )
         
@@ -217,6 +230,8 @@ async def get_transcription(
         segments=segments_response,
         processing_time=transcription.processing_time,
         audio_duration=transcription.audio_duration,
+        token_count=transcription.token_count,
+        cost=transcription.cost,
         created_at=transcription.created_at
     )
 
@@ -272,6 +287,8 @@ async def list_transcriptions(
                 segments=segments_response,
                 processing_time=t.processing_time,
                 audio_duration=t.audio_duration,
+                token_count=t.token_count,
+                cost=t.cost,
                 created_at=t.created_at
             )
         )
@@ -318,10 +335,19 @@ async def get_statistics(db: Session = Depends(get_db)):
     ).group_by(Transcription.task).all()
     tasks = {task: count for task, count in task_counts}
     
+    # Calculate total tokens and cost
+    total_tokens_result = db.query(func.sum(Transcription.token_count)).scalar()
+    total_tokens = int(total_tokens_result) if total_tokens_result else 0
+    
+    total_cost_result = db.query(func.sum(Transcription.cost)).scalar()
+    total_cost = float(total_cost_result) if total_cost_result else 0.0
+    
     return StatsResponse(
         total_transcriptions=total_transcriptions,
         total_audio_duration=total_audio_duration,
         average_processing_time=average_processing_time,
+        total_tokens=total_tokens,
+        total_cost=total_cost,
         languages=languages,
         models_used=models_used,
         tasks=tasks
@@ -375,6 +401,155 @@ async def get_date_statistics(
         )
         for date, count, total_duration in results
     ]
+
+
+@app.get("/export/excel")
+async def export_to_excel(
+    language: Optional[str] = Query(default=None, description="Filter by language"),
+    model: Optional[str] = Query(default=None, description="Filter by model"),
+    start_date: Optional[str] = Query(default=None, description="Start date (YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(default=None, description="End date (YYYY-MM-DD)"),
+    db: Session = Depends(get_db)
+):
+    """
+    Export transcriptions to Excel with count, tokens, and cost information
+    """
+    query = db.query(Transcription)
+    
+    # Apply filters
+    if language:
+        query = query.filter(Transcription.language == language)
+    if model:
+        query = query.filter(Transcription.model_used == model)
+    if start_date:
+        try:
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+            query = query.filter(Transcription.created_at >= start_dt)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid start_date format. Use YYYY-MM-DD")
+    if end_date:
+        try:
+            end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+            # Include the entire end date
+            end_dt = end_dt.replace(hour=23, minute=59, second=59)
+            query = query.filter(Transcription.created_at <= end_dt)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid end_date format. Use YYYY-MM-DD")
+    
+    # Get all transcriptions
+    transcriptions = query.order_by(desc(Transcription.created_at)).all()
+    
+    if not transcriptions:
+        raise HTTPException(status_code=404, detail="No transcriptions found matching the criteria")
+    
+    # Prepare data for Excel
+    data = []
+    for t in transcriptions:
+        # Calculate token count if not already stored
+        token_count = t.token_count
+        if token_count is None:
+            is_multilingual = not t.model_used.endswith(".en") if t.model_used else True
+            token_count = calculate_token_count(t.transcribed_text, t.language or "en", is_multilingual)
+        
+        # Calculate cost if not already stored
+        cost = t.cost
+        if cost is None:
+            cost = calculate_cost(token_count, t.model_used, t.audio_duration)
+        
+        data.append({
+            "ID": t.id,
+            "Audio Filename": t.audio_filename,
+            "Transcribed Text": t.transcribed_text,
+            "Language": t.language or "Unknown",
+            "Model Used": t.model_used,
+            "Task": t.task,
+            "Token Count": token_count,
+            "Cost (USD)": cost,
+            "Audio Duration (s)": t.audio_duration or 0,
+            "Processing Time (s)": t.processing_time or 0,
+            "Created At": t.created_at.strftime("%Y-%m-%d %H:%M:%S") if t.created_at else "",
+        })
+    
+    # Create DataFrame
+    df = pd.DataFrame(data)
+    
+    # Add summary row
+    total_count = len(df)
+    total_tokens = df["Token Count"].sum()
+    total_cost = df["Cost (USD)"].sum()
+    total_duration = df["Audio Duration (s)"].sum()
+    avg_processing_time = df["Processing Time (s)"].mean()
+    
+    summary_data = {
+        "ID": "SUMMARY",
+        "Audio Filename": "",
+        "Transcribed Text": "",
+        "Language": "",
+        "Model Used": "",
+        "Task": "",
+        "Token Count": total_tokens,
+        "Cost (USD)": total_cost,
+        "Audio Duration (s)": total_duration,
+        "Processing Time (s)": avg_processing_time,
+        "Created At": "",
+    }
+    
+    # Create Excel file in memory
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        # Write main data
+        df.to_excel(writer, sheet_name='Transcriptions', index=False)
+        
+        # Write summary sheet
+        summary_df = pd.DataFrame([summary_data])
+        summary_df.to_excel(writer, sheet_name='Summary', index=False)
+        
+        # Format the Excel file
+        workbook = writer.book
+        worksheet = writer.sheets['Transcriptions']
+        summary_sheet = writer.sheets['Summary']
+        
+        # Auto-adjust column widths
+        for column in worksheet.columns:
+            max_length = 0
+            column_letter = column[0].column_letter
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 50)
+            worksheet.column_dimensions[column_letter].width = adjusted_width
+        
+        # Format summary sheet
+        for column in summary_sheet.columns:
+            column_letter = column[0].column_letter
+            summary_sheet.column_dimensions[column_letter].width = 20
+        
+        # Add summary text
+        summary_sheet.cell(row=2, column=1, value="Total Count:")
+        summary_sheet.cell(row=2, column=2, value=total_count)
+        summary_sheet.cell(row=3, column=1, value="Total Tokens:")
+        summary_sheet.cell(row=3, column=2, value=total_tokens)
+        summary_sheet.cell(row=4, column=1, value="Total Cost (USD):")
+        summary_sheet.cell(row=4, column=2, value=total_cost)
+        summary_sheet.cell(row=5, column=1, value="Total Audio Duration (s):")
+        summary_sheet.cell(row=5, column=2, value=total_duration)
+        summary_sheet.cell(row=6, column=1, value="Average Processing Time (s):")
+        summary_sheet.cell(row=6, column=2, value=avg_processing_time)
+    
+    output.seek(0)
+    
+    # Generate filename with timestamp
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    filename = f"whisper_transcriptions_{timestamp}.xlsx"
+    
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
 
 
 @app.delete("/transcriptions/{transcription_id}")

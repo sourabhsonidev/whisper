@@ -36,6 +36,8 @@ class TranscriptionResponse(BaseModel):
     segments: Optional[List[SegmentResponse]]
     processing_time: Optional[float]
     audio_duration: Optional[float]
+    token_count: Optional[int] = None
+    cost: Optional[float] = None
     created_at: datetime
     
     class Config:
@@ -55,6 +57,8 @@ class StatsResponse(BaseModel):
     total_transcriptions: int
     total_audio_duration: float
     average_processing_time: float
+    total_tokens: int
+    total_cost: float
     languages: Dict[str, int]
     models_used: Dict[str, int]
     tasks: Dict[str, int]

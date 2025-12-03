@@ -105,6 +105,8 @@ Get overall statistics including:
 - Total transcriptions
 - Total audio duration processed
 - Average processing time
+- Total tokens
+- Total cost
 - Language breakdown
 - Model usage breakdown
 - Task breakdown
@@ -137,7 +139,32 @@ Get statistics grouped by date.
 curl "http://localhost:8000/reports/by-date?days=7"
 ```
 
-### 7. Delete Transcription
+### 7. Export to Excel
+**GET** `/export/excel`
+
+Export transcriptions to Excel format with count, tokens, and cost information.
+
+**Query Parameters:**
+- `language` (optional): Filter by language code
+- `model` (optional): Filter by model name
+- `start_date` (optional): Start date filter (YYYY-MM-DD)
+- `end_date` (optional): End date filter (YYYY-MM-DD)
+
+**Response:**
+Returns an Excel file (.xlsx) with two sheets:
+- **Transcriptions**: All transcription data including ID, filename, text, language, model, task, token count, cost, duration, processing time, and created date
+- **Summary**: Summary statistics including total count, total tokens, total cost, total duration, and average processing time
+
+**Example:**
+```bash
+# Export all transcriptions
+curl -O -J "http://localhost:8000/export/excel"
+
+# Export with filters
+curl -O -J "http://localhost:8000/export/excel?language=en&start_date=2024-01-01&end_date=2024-12-31"
+```
+
+### 8. Delete Transcription
 **DELETE** `/transcriptions/{transcription_id}`
 
 Delete a transcription and its associated audio file.
@@ -170,6 +197,8 @@ The `transcriptions` table stores:
 - `segments`: JSON array of transcription segments with timestamps
 - `processing_time`: Time taken to process (seconds)
 - `audio_duration`: Duration of audio (seconds)
+- `token_count`: Number of tokens in the transcription
+- `cost`: Calculated cost in USD based on tokens and model
 - `created_at`: Timestamp
 - `updated_at`: Timestamp
 - `metadata`: Additional metadata (JSON)
@@ -189,11 +218,21 @@ with open("audio.mp3", "rb") as f:
     result = response.json()
     print(f"Transcription ID: {result['id']}")
     print(f"Text: {result['transcribed_text']}")
+    print(f"Token Count: {result['token_count']}")
+    print(f"Cost: ${result['cost']:.6f}")
 
 # Get statistics
 stats = requests.get("http://localhost:8000/reports/stats").json()
 print(f"Total transcriptions: {stats['total_transcriptions']}")
+print(f"Total tokens: {stats['total_tokens']}")
+print(f"Total cost: ${stats['total_cost']:.6f}")
 print(f"Languages: {stats['languages']}")
+
+# Export to Excel
+response = requests.get("http://localhost:8000/export/excel?language=en")
+with open("transcriptions.xlsx", "wb") as f:
+    f.write(response.content)
+print("Excel file exported successfully!")
 ```
 
 ## Configuration
