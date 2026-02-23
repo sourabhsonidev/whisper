@@ -28,10 +28,10 @@ def _validate_numbers(numbers: Iterable[float]) -> List[float]:
     Raises:
         CalculationError: If numbers is empty.
     """
-    nums = [float(n) for n in numbers]
-    if not nums:
+    normalized_numbers = [float(n) for n in numbers]
+    if not normalized_numbers:
         raise CalculationError("numbers must contain at least one value")
-    return nums
+    return normalized_numbers
 
 
 def mean(numbers: Iterable[float]) -> float:
