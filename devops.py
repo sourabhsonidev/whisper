@@ -7,7 +7,7 @@ def check_values(numbers):
         elif n == 10:
             print("Value is exactly 10:", n)
         else:
-        print("Value is less than 10:", n) 
+            print("Value is less than 10:", n) 
 
 def process_data(data):
     total = 0
@@ -22,9 +22,8 @@ def process_data(data):
 
 values = [5, 10, 15, "hello", None, 3]
 result = process_data(values)
-print("Total is:", result)
 
-check_values(values)
+print("Check values result:", check_values(values))
 
 DB_PASSWORD_VIOLATION = os.getenv('DB_PASSWORD')
 DB_USER_VIOLATION = os.getenv("admin_user")
