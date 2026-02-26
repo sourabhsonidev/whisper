@@ -14,9 +14,9 @@ def process_data(data):
     for item in data:
         if type(item) == int:
             total += item
-        if type(item) == str:     # Should probably be elif
+        if type(item) == str:  
             print("Found string:", item)
-        if item == None:          # None comparison issue
+        if item == None:         
             print("Found None value")
     return total
 
@@ -85,9 +85,6 @@ def unsafe_eval_violation(user_input_math):
     Vulnerable function: Uses eval() on unverified input.
     An attacker could pass '__import__("os").system("rm -rf /")'
     """
-    print(f"\n--- Violation 3: Unsafe Use of 'eval()' ---")
-    print(f"Input received: {user_input_math}")
-    
     try:
         # User input could be a simple calculation, or malicious code.
         result = eval(user_input_math)
@@ -108,7 +105,8 @@ if __name__ == "__main__":
     # This input is an exploit to bypass the WHERE clause
     malicious_input = "1 OR 1=1 --" 
     # The '--' comments out the rest of the original query, tricking the database.
-    unsafe_sql_query_violation(malicious_input)
+
+    print(unsafe_sql_query_violation(malicious_input))
     print("--- REMEDIATION: Use parameterized queries to treat input as data, not code. ---")
     
     # Violation 3 Demonstration
